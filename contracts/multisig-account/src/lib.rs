@@ -20,6 +20,8 @@
 
 #![no_std]
 
+mod timelock;
+
 // The helpers are only needed by tests; gate them so the contract itself stays
 // minimal. Unit tests within this crate (`#[cfg(test)]`) and downstream
 // integration tests (which enable the `testutils` feature through their
@@ -39,6 +41,10 @@ pub enum Error {
     UnknownSigner = 1,
     /// Fewer than `threshold` distinct signers authorized the call.
     InsufficientSignatures = 2,
+    /// The caller is not authorized to perform this action.
+    Unauthorized = 3,
+    /// The timelock period has not yet elapsed.
+    TimelockNotExpired = 4,
 }
 
 #[contracttype]
@@ -47,6 +53,14 @@ pub enum DataKey {
     Threshold,
     /// Persistent storage per registered signer: marks it as authorized.
     Signer(Address),
+    /// Instance storage: the number of queued transactions created.
+    QueueCount,
+    /// Persistent storage per queued transaction: the transaction details.
+    QueuedTransaction(u64),
+    /// Instance storage: the guardian address for timelock cancellation.
+    TimelockGuardian,
+    /// Temporary storage per approval: marks a signer has approved a queued transaction.
+    TimelockApproval(u64, Address),
 }
 
 /// A threshold account enforcing that `threshold` distinct registered signers
@@ -76,12 +90,86 @@ impl MultisigAccount {
             .set(&DataKey::Threshold, &effective);
     }
 
-    /// Read the current threshold.
-    pub fn get_threshold(env: Env) -> u32 {
+    /// Set the guardian address for timelock cancellation.
+    ///
+    /// The guardian can cancel queued transactions during the delay window.
+    pub fn set_timelock_guardian(env: Env, guardian: Address) {
         env.storage()
             .instance()
-            .get(&DataKey::Threshold)
-            .unwrap_or(1)
+            .set(&DataKey::TimelockGuardian, &guardian);
+    }
+
+    /// Read the current guardian.
+    pub fn get_timelock_guardian(env: Env) -> Address {
+        env.storage()
+            .instance()
+            .get(&DataKey::TimelockGuardian)
+            .unwrap_or_else(|| Address::generate(&env))
+    }
+
+    /// Queue a high-risk transaction for delayed execution.
+    ///
+    /// The transaction enters a queued state and cannot be executed
+    /// until `execution_delay` ledgers have passed. The `guardian` can
+    /// cancel the transaction during the delay window.
+    pub fn queue_transaction(
+        env: Env,
+        call_hash: [u8; 32],
+        execution_delay: u32,
+        required_approvals: u32,
+    ) -> u64 {
+        let guardian = env
+            .storage()
+            .instance()
+            .get(&DataKey::TimelockGuardian)
+            .unwrap_or_else(|| Address::generate(&env));
+
+        timelock::queue_transaction(&env, call_hash, execution_delay, required_approvals, guardian)
+    }
+
+    /// Execute a queued transaction after the timelock has elapsed.
+    ///
+    /// Requires `required_approvals` approvals to have been collected.
+    /// Returns `Err(Error::TimelockNotExpired)` if the timelock has not yet elapsed.
+    pub fn execute_queued_transaction(env: Env, queue_id: u64) -> Result<(), Error> {
+        let guardian = env
+            .storage()
+            .instance()
+            .get(&DataKey::TimelockGuardian)
+            .unwrap_or_else(|| Address::generate(&env));
+
+        timelock::execute_queued_transaction(&env, queue_id)
+    }
+
+    /// Cancel a queued transaction during the delay window.
+    ///
+    /// Only the guardian can cancel. Returns `Err(Error::TimelockNotExpired)`
+    /// if the timelock has already elapsed.
+    pub fn cancel_queued_transaction(env: Env, queue_id: u64, caller: &Address) -> Result<(), Error> {
+        let guardian = env
+            .storage()
+            .instance()
+            .get(&DataKey::TimelockGuardian)
+            .unwrap_or_else(|| Address::generate(&env));
+
+        timelock::cancel_queued_transaction(&env, queue_id, caller)
+    }
+
+    /// Approve a queued transaction.
+    ///
+    /// Each authorized signer can approve once. Returns `Err(Error::AlreadyVoted)`
+    /// if the signer has already approved.
+    pub fn approve_queued_transaction(
+        env: Env,
+        queue_id: u64,
+        signer: &Address,
+    ) -> Result<(), Error> {
+        timelock::approve_queued_transaction(&env, queue_id, signer)
+    }
+
+    /// Read-only: fetch a queued transaction by ID.
+    pub fn get_queued_transaction(env: Env, queue_id: u64) -> Result<timelock::QueuedTransaction, Error> {
+        timelock::get_queued_transaction(&env, queue_id)
     }
 
     /// True if `signer` is registered on this account.
