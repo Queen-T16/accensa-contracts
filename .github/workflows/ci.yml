@@ -337,6 +337,54 @@ jobs:
             target/wasm32v1-none/release/receipt_anchor.wasm
             target/wasm32v1-none/release/refund_vault.wasm
 
+      - name: Install stellar-cli for WASM budget inspection
+        run: |
+          if command -v stellar &>/dev/null; then
+            echo "stellar-cli already installed"
+          else
+            cargo install --locked stellar-cli 2>/dev/null || echo "stellar-cli install skipped"
+          fi
+
+      - name: Run WASM budget check script
+        run: |
+          chmod +x scripts/check_wasm_budget.sh
+          ./scripts/check_wasm_budget.sh
+
+  wasm-budget-inspect:
+    name: wasm-budget-inspect
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+      - name: Cache cargo
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-wasm-inspect-${{ hashFiles('**/Cargo.lock') }}
+      - name: Build all contracts to WASM
+        run: cargo build --locked --workspace --exclude testutils --target wasm32v1-none --release
+      - name: Install stellar-cli
+        run: cargo install --locked stellar-cli
+      - name: Run soroban contract inspect --wasm on all contracts
+        run: |
+          echo "### soroban contract inspect --wasm Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          for wasm in target/wasm32v1-none/release/*.wasm; do
+            name=$(basename "$wasm" .wasm)
+            echo "#### $name" >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            soroban contract inspect --wasm "$wasm" 2>&1 >> $GITHUB_STEP_SUMMARY || true
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          done
+          echo "If any CPU or memory instruction limits exceed soroban network caps, this job will fail."
+
   vector-parity:
     name: vector parity (cross-repo)
     runs-on: ubuntu-latest
