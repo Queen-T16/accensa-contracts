@@ -21,6 +21,7 @@
 #![no_std]
 
 mod timelock;
+mod signers;
 
 // The helpers are only needed by tests; gate them so the contract itself stays
 // minimal. Unit tests within this crate (`#[cfg(test)]`) and downstream
@@ -175,6 +176,27 @@ impl MultisigAccount {
     /// True if `signer` is registered on this account.
     pub fn is_signer(env: Env, signer: Address) -> bool {
         env.storage().persistent().has(&DataKey::Signer(signer))
+    }
+
+    /// Rotate signers and threshold atomically in a single call.
+    ///
+    /// # Parameters
+    /// - `to_add`: new signers to add (must not already be signers, must not be zero address)
+    /// - `to_remove`: signers to remove (must be existing signers)
+    /// - `new_threshold`: new threshold (must satisfy 1 <= threshold <= total_active_signers)
+    ///
+    /// # Returns
+    /// `Ok(())` on success, or `Err` if validation fails.
+    ///
+    /// # Events emitted on success
+    /// - [`SignersRotated`](crate::signers::SignersRotated)
+    pub fn rotate_signers_and_threshold(
+        env: Env,
+        to_add: Vec<Address>,
+        to_remove: Vec<Address>,
+        new_threshold: u32,
+    ) -> Result<(), Error> {
+        signers::rotate_signers_and_threshold(&env, to_add, to_remove, new_threshold)
     }
 }
 
