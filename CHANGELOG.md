@@ -9,6 +9,7 @@ breaking changes bump the **minor** version, and they are called out as such.
 ## [Unreleased]
 
 ### Added
+- **Quadratic Voting Module**: Implemented integer square root voting power calculation for the Governance contract to prevent single-whale domination (issue #382).
 - **Dual-Asset Support**: Added support for native XLM and SEP-41 tokens in RefundVault.
 - **Upto-Authorization Fuzzing**: Added extensive fuzz testing limits.
 - **VDF Slashing Penalty**: Accurate assessment of slashing penalty calculations.

@@ -54,8 +54,8 @@ fn setup() -> (
     let m2 = Address::generate(&env);
 
     let members = Vec::from_array(&env, [m1.clone(), m2.clone()]);
-    let weights = Vec::from_array(&env, [1u64, 1u64]);
-    let gov_id = env.register(Governance, (members, weights, 10_000u32, 1000u32));
+    let deposits = Vec::from_array(&env, [1u64, 1u64]);
+    let gov_id = env.register(Governance, (members, deposits, 10_000u32, 1000u32));
     let gov = GovernanceClient::new(&env, &gov_id);
 
     let anchor_id = env.register(ReceiptAnchor, ());

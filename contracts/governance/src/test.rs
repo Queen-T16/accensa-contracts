@@ -55,9 +55,9 @@ struct Harness {
     m3: Address,
 }
 
-/// Three members weighted 1/1/2 (total 4), 6000 bps (60%) quorum, 100-ledger
-/// voting window. `m3` alone (weight 2) cannot pass; `m3` + either other
-/// member (weight 3) can.
+/// Three members with deposits 1/1/4 (quadratic weights 1/1/2, total 4),
+/// 6000 bps (60%) quorum, 100-ledger voting window. `m3` alone (weight 2)
+/// cannot pass; `m3` + either other member (weight 3) can.
 fn setup() -> Harness {
     let env = Env::default();
     env.mock_all_auths();
@@ -67,9 +67,9 @@ fn setup() -> Harness {
     let m3 = Address::generate(&env);
 
     let members = Vec::from_array(&env, [m1.clone(), m2.clone(), m3.clone()]);
-    let weights = Vec::from_array(&env, [1u64, 1u64, 2u64]);
+    let deposits = Vec::from_array(&env, [1u64, 1u64, 4u64]);
 
-    let gov_id = env.register(Governance, (members, weights, 6000u32, 100u32));
+    let gov_id = env.register(Governance, (members, deposits, 6000u32, 100u32));
     let gov = GovernanceClient::new(&env, &gov_id);
 
     let target_id = env.register(Target, ());
@@ -99,13 +99,13 @@ fn constructor_rejects_mismatched_lengths() {
     let env = Env::default();
     let m1 = Address::generate(&env);
     let members = Vec::from_array(&env, [m1]);
-    let weights = Vec::from_array(&env, [1u64, 2u64]);
+    let deposits = Vec::from_array(&env, [1u64, 2u64]);
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        env.register(Governance, (members, weights, 5000u32, 10u32))
+        env.register(Governance, (members, deposits, 5000u32, 10u32))
     }));
     assert!(
         res.is_err(),
-        "mismatched members/weights must reject construction"
+        "mismatched members/deposits must reject construction"
     );
 }
 
@@ -114,9 +114,9 @@ fn constructor_rejects_zero_threshold() {
     let env = Env::default();
     let m1 = Address::generate(&env);
     let members = Vec::from_array(&env, [m1]);
-    let weights = Vec::from_array(&env, [1u64]);
+    let deposits = Vec::from_array(&env, [1u64]);
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        env.register(Governance, (members, weights, 0u32, 10u32))
+        env.register(Governance, (members, deposits, 0u32, 10u32))
     }));
     assert!(res.is_err(), "a zero threshold must reject construction");
 }
@@ -126,9 +126,9 @@ fn constructor_rejects_zero_voting_period() {
     let env = Env::default();
     let m1 = Address::generate(&env);
     let members = Vec::from_array(&env, [m1]);
-    let weights = Vec::from_array(&env, [1u64]);
+    let deposits = Vec::from_array(&env, [1u64]);
     let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        env.register(Governance, (members, weights, 5000u32, 0u32))
+        env.register(Governance, (members, deposits, 5000u32, 0u32))
     }));
     assert!(
         res.is_err(),
@@ -259,4 +259,38 @@ fn prune_succeeds_immediately_after_execution() {
     h.gov.prune_proposal(&id);
     let res = h.gov.try_get_proposal(&id);
     assert_eq!(res, Err(Ok(Error::ProposalNotFound)));
+}
+
+#[test]
+fn quadratic_weight_is_sqrt_of_deposit() {
+    let h = setup();
+    // m1 has deposit 1 -> quadratic weight = sqrt(1) = 1
+    // m2 has deposit 1 -> quadratic weight = sqrt(1) = 1
+    // m3 has deposit 4 -> quadratic weight = sqrt(4) = 2
+    assert_eq!(h.gov.get_member_weight(&h.m1), 1);
+    assert_eq!(h.gov.get_member_weight(&h.m2), 1);
+    assert_eq!(h.gov.get_member_weight(&h.m3), 2);
+    assert_eq!(h.gov.get_total_weight(), 4);
+}
+
+#[test]
+fn quadratic_weight_prevents_whale_domination() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let m1 = Address::generate(&env);
+    let m2 = Address::generate(&env);
+
+    // m1 deposits 100 tokens -> weight 10
+    // m2 deposits 10000 tokens -> weight 100
+    // With linear voting, m2 would have 100x more power
+    // With quadratic voting, m2 has only 10x more power
+    let members = Vec::from_array(&env, [m1.clone(), m2.clone()]);
+    let deposits = Vec::from_array(&env, [100u64, 10000u64]);
+    let gov_id = env.register(Governance, (members, deposits, 5000u32, 100u32));
+    let gov = GovernanceClient::new(&env, &gov_id);
+
+    assert_eq!(gov.get_member_weight(&m1), 10);
+    assert_eq!(gov.get_member_weight(&m2), 100);
+    assert_eq!(gov.get_total_weight(), 110);
 }

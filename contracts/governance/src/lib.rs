@@ -38,10 +38,15 @@
 #[cfg(test)]
 mod test;
 
+mod math;
+mod voting;
+
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contractmeta, contracttype, Address, Env,
     Symbol, Val, Vec,
 };
+
+use voting::{quadratic_weight, register_deposit};
 
 contractmeta!(key = "name", val = "Governance");
 contractmeta!(key = "version", val = env!("CARGO_PKG_VERSION"));
@@ -83,7 +88,7 @@ pub enum Error {
 
 #[contracttype]
 pub enum DataKey {
-    /// Instance: sum of every member's weight.
+    /// Instance: sum of every member's quadratic weight.
     TotalWeight,
     /// Instance: quorum, in basis points (`1..=10_000`) of `TotalWeight`.
     ThresholdBps,
@@ -91,8 +96,8 @@ pub enum DataKey {
     VotingPeriod,
     /// Instance: number of proposals ever created; also the next id.
     ProposalCount,
-    /// Persistent, one entry per member: that member's voting weight.
-    Member(Address),
+    /// Persistent, one entry per member: that member's deposited governance tokens.
+    MemberDeposit(Address),
     /// Persistent: a proposal's calldata and running tally.
     Proposal(u64),
     /// Temporary: marks that `.1` already voted on proposal `.0`.
@@ -175,11 +180,11 @@ impl Governance {
     pub fn __constructor(
         env: Env,
         members: Vec<Address>,
-        weights: Vec<u64>,
+        deposits: Vec<u64>,
         threshold_bps: u32,
         voting_period_ledgers: u32,
     ) -> Result<(), Error> {
-        if members.len() != weights.len() {
+        if members.len() != deposits.len() {
             return Err(Error::ArityMismatch);
         }
         if members.is_empty() || members.len() > MAX_MEMBERS {
@@ -195,17 +200,17 @@ impl Governance {
         let mut total_weight: u64 = 0;
         for i in 0..members.len() {
             let member = members.get(i).unwrap();
-            let weight = weights.get(i).unwrap();
-            if weight == 0 {
+            let deposit = deposits.get(i).unwrap();
+            if deposit == 0 {
                 return Err(Error::InvalidMembers);
             }
-            let key = DataKey::Member(member);
+            let key = DataKey::MemberDeposit(member);
             if env.storage().persistent().has(&key) {
                 return Err(Error::InvalidMembers);
             }
-            env.storage().persistent().set(&key, &weight);
+            register_deposit(&env, member, deposit);
             total_weight = total_weight
-                .checked_add(weight)
+                .checked_add(quadratic_weight(&env, member))
                 .ok_or(Error::InvalidMembers)?;
         }
 
@@ -234,7 +239,7 @@ impl Governance {
         args: Vec<Val>,
     ) -> Result<u64, Error> {
         proposer.require_auth();
-        Self::member_weight(&env, &proposer)?;
+        Self::member_deposit(&env, &proposer)?;
 
         let id: u64 = env
             .storage()
@@ -284,10 +289,14 @@ impl Governance {
     }
 
     /// Cast a weighted vote on an open proposal. Each member may vote once
-    /// per proposal.
+    /// per proposal. Voting power is the integer square root of the
+    /// member's deposited governance tokens.
     pub fn vote(env: Env, voter: Address, proposal_id: u64, support: bool) -> Result<(), Error> {
         voter.require_auth();
-        let weight = Self::member_weight(&env, &voter)?;
+        let weight = quadratic_weight(&env, &voter);
+        if weight == 0 {
+            return Err(Error::NotAMember);
+        }
 
         let key = DataKey::Proposal(proposal_id);
         let mut proposal: Proposal = env
@@ -314,9 +323,9 @@ impl Governance {
             .extend_ttl(&voted_key, remaining_ttl, remaining_ttl);
 
         if support {
-            proposal.yes_weight += weight;
+            proposal.yes_weight = proposal.yes_weight.saturating_add(weight);
         } else {
-            proposal.no_weight += weight;
+            proposal.no_weight = proposal.no_weight.saturating_add(weight);
         }
         env.storage().persistent().set(&key, &proposal);
 
@@ -402,17 +411,14 @@ impl Governance {
             .ok_or(Error::ProposalNotFound)
     }
 
-    /// Read-only: a member's weight, or `0` if not a member.
+    /// Read-only: a member's quadratic voting weight, or `0` if not a member.
     pub fn get_member_weight(env: Env, member: Address) -> u64 {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Member(member))
-            .unwrap_or(0)
+        quadratic_weight(&env, &member)
     }
 
     /// Read-only: whether `member` is registered.
     pub fn is_member(env: Env, member: Address) -> bool {
-        env.storage().persistent().has(&DataKey::Member(member))
+        env.storage().persistent().has(&DataKey::MemberDeposit(member))
     }
 
     /// Read-only: whether `voter` has already voted on `proposal_id`.
@@ -422,7 +428,15 @@ impl Governance {
             .has(&DataKey::Voted(proposal_id, voter))
     }
 
-    /// Read-only: sum of every member's weight.
+    /// Read-only: a member's raw deposit, or `0` if not a member.
+    pub fn get_member_deposit(env: Env, member: Address) -> u64 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::MemberDeposit(member))
+            .unwrap_or(0)
+    }
+
+    /// Read-only: sum of every member's quadratic weight.
     pub fn get_total_weight(env: Env) -> u64 {
         env.storage()
             .instance()
@@ -454,11 +468,12 @@ impl Governance {
             .unwrap_or(0)
     }
 
-    fn member_weight(env: &Env, member: &Address) -> Result<u64, Error> {
+    fn member_deposit(env: &Env, member: &Address) -> Result<(), Error> {
         env.storage()
             .persistent()
-            .get(&DataKey::Member(member.clone()))
-            .ok_or(Error::NotAMember)
+            .get(&DataKey::MemberDeposit(member.clone()))
+            .ok_or(Error::NotAMember)?;
+        Ok(())
     }
 }
 // audit implementation
